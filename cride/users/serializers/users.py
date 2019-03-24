@@ -39,6 +39,8 @@ class UserLoginSerializer(serializers.Serializer):
         user = authenticate(username=attrs['email'], password=attrs['password'])
         if not user:
             raise serializers.ValidationError('Invalid credentials')
+        if not user.is_verified:
+            raise serializers.ValidationError('Account is not active yet.')
         self.context['user'] = user
         return attrs
 
@@ -90,6 +92,6 @@ class UserSignUpSerializer(serializers.Serializer):
     def create(self, validated_data):
         """Handle user and profile creation."""
         validated_data.pop('password_confirmation')
-        user = User.objects.create(**validated_data)
+        user = User.objects.create_user(**validated_data, is_verified=False)
         Profile.objects.create(user=user)
         return user
