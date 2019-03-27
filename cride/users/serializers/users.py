@@ -1,7 +1,14 @@
 """User serializers."""
 
+import jwt
+from datetime import timedelta
+
+from django.conf import settings
 from django.contrib.auth import authenticate, password_validation
+from django.core.mail import EmailMultiAlternatives
 from django.core.validators import RegexValidator
+from django.template.loader import render_to_string
+from django.utils import timezone
 from rest_framework import serializers
 from rest_framework.authtoken.models import Token
 from rest_framework.validators import UniqueValidator
@@ -94,4 +101,55 @@ class UserSignUpSerializer(serializers.Serializer):
         validated_data.pop('password_confirmation')
         user = User.objects.create_user(**validated_data, is_verified=False)
         Profile.objects.create(user=user)
+        self.send_confirmation_email(user)
         return user
+
+    def send_confirmation_email(self, user):
+        """Send account verification link to given user."""
+        verification_token = self.gen_verification_token(user)
+        subject = 'Welcome @{}! Verify your account to start using Comparte Ride'.format(user.username)
+        from_email = 'Comparte Ride <noreply@comparteride.com>'
+        content = render_to_string(
+            'emails/users/account_verification.html',
+            {'user': user, 'token': verification_token}
+        )
+        msg = EmailMultiAlternatives(subject, content, from_email, [user.email])
+        msg.attach_alternative(content, 'text/html')
+        msg.send()
+
+    def gen_verification_token(self, user):
+        """Create JWT token that the user can use to verify its account."""
+        exp_date = timezone.now() + timedelta(days=3)
+        payload = {
+            'user': user.username,
+            'exp': int(exp_date.timestamp()),
+            'type': 'email_confirmation'
+        }
+        token = jwt.encode(payload, settings.SECRET_KEY, algorithm='HS256')
+        return token.decode()
+
+
+class AccountVerificationSerializer(serializers.Serializer):
+    """Account verification serializer."""
+
+    token = serializers.CharField()
+
+    def validate_token(self, data):
+        """Verify token is valid."""
+        try:
+            payload = jwt.decode(data, settings.SECRET_KEY, algorithms=['HS256'])
+        except jwt.ExpiredSignatureError:
+            raise serializers.ValidationError('Verification link has expired.')
+        except jwt.PyJWTError:
+            raise serializers.ValidationError('Invalid token.')
+        if payload['type'] != 'email_confirmation':
+            raise serializers.ValidationError('Invalid token confirmation.')
+        self.context['payload'] = payload
+        return data
+
+    def save(self):
+        """User user's verified status."""
+        payload = self.context['payload']
+        user = User.objects.get(username=payload['user'])
+        user.is_verified = True
+        user.save()
